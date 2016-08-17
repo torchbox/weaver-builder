@@ -1,0 +1,377 @@
+#! /usr/bin/env python3
+# vim:set sw=4 ts=4 et:
+#
+# weaver-builder: build Docker images from Weaverfiles.
+#
+# Copyright (c) 2015, 2016 Torchbox Ltd.
+# Original author: Felicity Tarnell <felicity@torchbox.com>.
+#
+# Permission is granted to anyone to use this software for any purpose,
+# including commercial applications, and to alter it and redistribute it
+# freely. This software is provided 'as-is', without any express or implied
+# warranty.
+
+# weaver-builder takes a Git repository containing a Weaverfile, converts
+# it to a Dockerfile, then pushes it to a Docker repository.
+
+import os, sys, multiprocessing, socket, yaml, re, subprocess, random, string, time
+from sys import stdout, stderr, exit
+
+import logging
+FORMAT = '%(asctime)-15s [%(levelname)-7s] weaver-builder: %(message)s'
+logging.basicConfig(format=FORMAT, level=logging.INFO)
+logger = logging.getLogger('weaver.builder')
+
+if 'WEAVER_DOCKER_REPOSITORY' not in os.environ:
+    logger.error("$WEAVER_DOCKER_REPOSITORY is not set.")
+    exit(1)
+repository = os.environ['WEAVER_DOCKER_REPOSITORY']
+
+git_uri = os.environ['WEAVER_GIT_URI']
+if 'WEAVER_GIT_URI' not in os.environ:
+    logger.error("$WEAVER_GIT_URI is not set.")
+    exit(1)
+git_uri = os.environ['WEAVER_GIT_URI']
+
+git_ref = os.environ.get('WEAVER_GIT_REF', None)
+
+docroot = '/app'
+
+def run_or_die(*args):
+    sp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    out, err = sp.communicate()
+    if sp.returncode != 0:
+        logger.error("build failed with status <%s>:\n%s", sp.returncode, out.decode('utf-8'))
+        logger.error("build terminated with error.")
+        exit(1)
+
+
+logger.info("""
+__        __
+\ \      / /__  __ ___   _____ _ __
+ \ \ /\ / / _ \/ _` \ \ / / _ \ '__|
+  \ V  V /  __/ (_| |\ V /  __/ |
+___\_/\_/_\___|\__,_|_\_/_\___|_|___
+`====================================
+
+Weaver application deployment system,
+Copyright (c) 2015, 2016 Torchbox Ltd.
+
+""")
+
+app_dir = '/usr/src/build'
+os.mkdir(app_dir)
+
+logger.info("Cloning git repository <%s> (ref <%s>)", git_uri, git_ref)
+
+if git_ref:
+    ret = run_or_die('git', 'clone', '-b', git_ref, '--', git_uri, app_dir)
+else:
+    ret = run_or_die('git', 'clone', '--', git_uri, app_dir)
+
+try:
+    os.chdir(app_dir)
+except Exception as e:
+    logger.error("cannot chdir to %s: %s", app_dir, str(e))
+    exit(1)
+
+# Basic environment that we'll put in the built image.
+env = {
+    'PATH': '/sbin:/bin:/usr/sbin:/usr/bin',
+}
+
+base_image = 'torchbox/uwsgi:2.1'
+
+def do_sub(m):
+    subn = m.group(1)
+    funcs = {
+#        'randchars': randchars,
+#        'prandchars': prandchars,
+    }
+
+    bits = subn.split(':')
+    if len(bits) == 1:
+        return env.get(subn, os.environ.get(subn, ''))
+    else:
+        try:
+            return funcs[bits[0]](*bits[1:])
+        except KeyError:
+            logger.error("error interpolating <%s>: unknown function %s", subn, bits[0])
+        except Exception as exc:
+            logger.error("error interpolating <%s>: %s", subn, str(exc))
+
+        exit(1)
+
+
+def expand(text):
+    return re.sub(
+        '\\${([a-zA-Z0-9_:/-]+)}',
+        do_sub,
+        str(text))
+
+
+weaverfile = os.environ.get('WEAVER_FILE', 'Weaverfile')
+logger.info("loading environment from <%s>", weaverfile)
+
+with open(weaverfile, 'r') as stream:
+    try:
+        config = yaml.load(stream)
+    except yaml.YAMLError as e:
+        logger.error("cannot load %s: %s", weaverfile, str(e))
+        exit(1)
+
+
+class MergeError(Exception):
+    pass
+
+
+def data_merge(a, b):
+    key = None
+    try:
+        if a is None or isinstance(a, (str, int, float)):
+            a = b
+        elif isinstance(a, list):
+            if isinstance(b, list):
+                a.extend(b)
+            else:
+                a.append(b)
+        elif isinstance(a, dict):
+            if isinstance(b, dict):
+                for key in b:
+                    if key in a:
+                        a[key] = data_merge(a[key], b[key])
+                    else:
+                        a[key] = b[key]
+            else:
+                raise MergeError('Cannot merge non-dict "%s" into dict "%s"' % (b, a))
+        else:
+            raise MergeError('NOT IMPLEMENTED "%s" into "%s"' % (b, a))
+    except TypeError as exc:
+        raise MergeError('TypeError "%s" in key "%s" when merging "%s" into "%s"' % (exc, key, b, a))
+    return a
+
+envtype = os.environ.get('WEAVER_ENVIRONMENT_TYPE', None)
+if envtype is not None and config.get(envtype, None) is not None:
+    extra = config[envtype]
+    del config[envtype]
+    data_merge(config, extra)
+
+if 'env' in config and config['env'] is not None:
+    env.update({k: expand(v) for k, v in config['env'].items()})
+
+if 'docroot' in config:
+    docroot = config['docroot']
+
+if 'ssl' in config:
+    ssl = config['ssl']
+
+    if 'force' not in ssl:
+        ssl['force'] = False
+else:
+    ssl = None
+
+args = [
+    '/usr/local/bin/uwsgi',
+    '--thunder-lock',
+    '--master',
+    '--http=0.0.0.0:80',
+    '--auto-procname',
+    '--chdir='+docroot,
+    '--offload-threads=2',
+    '--mime-file=/etc/mime.types',
+    '--response-route-run=chunked:',
+    '--logformat='
+    '%(addr) %(host) [%(ltime)] "%(method) %(uri) %(proto)" %(status) %(size) %(msecs)ms'
+    'pid=%(pid) worker=%(wid) core=%(core) switches=%(switches) rss=%(rssM)M vsz=%(vszM)M',
+]
+
+dockerfile = open('Dockerfile', 'w')
+
+if 'python' in config:
+    python = config['python']
+
+    if not isinstance(python, dict):
+        stderr.write("ERROR: 'python' must be a dict.\n")
+        exit(1)
+
+    if 'version' not in python:
+        stderr.write("ERROR: Python version not configured in Weaverfile\n")
+        exit(1)
+
+    if 'module' not in python:
+        stderr.write("ERROR: Python WSGI module not configured in Weaverfile\n")
+        exit(1)
+
+    python_version = expand(python['version'])
+
+    if len(python_version) != 3 or python_version[1] != '.':
+        logger.error("%s: python version must be X.Y, not %s\n", weaverfile, python_version)
+        exit(1)
+
+    env['PYTHONPATH'] = '/app'
+    plugin = '/usr/local/lib/uwsgi/python_plugin.so'
+    args.append('--plugin={}'.format(plugin))
+    args.append('--module={}'.format(expand(python['module'])))
+
+    base_image = 'torchbox/python:'+python['version']
+else:
+    python = None
+
+if 'php' in config:
+    # XXX
+    php = config['php']
+
+    if not isinstance(php, dict):
+        php = {'version': php}
+
+    if 'version' not in php:
+        print("[weaver] ERROR: PHP version not configured in Weaverfile")
+        sys.exit(1)
+
+    env['PATH'] = '/sw/php/bin:/local/home/.composer/vendor/bin:' + env['PATH']
+
+    if 'index' in php and php['index'] is None:
+        php['index'] = []
+    if 'index' not in php:
+        php['index'] = ['index.php']
+
+    if 'extensions' not in php or php['extensions'] is None:
+        php['extensions'] = []
+    if 'ini-set' not in php or php['ini-set'] is None:
+        php['ini-set'] = []
+    if 'date.timezone' not in php['ini-set']:
+        php['ini-set']['date.timezone'] = 'UTC'
+else:
+    php = None
+
+logger.info("configuring application...")
+
+if ssl is not None:
+    if ssl['force']:
+        args.append('--route-if=equal:${lower[HTTPS]};on goto:ssl-okay')
+        args.append('--route-if=equal:${lower[HTTP_X_FORWARDED_PROTO]};https goto:ssl-okay')
+        args.append('--route-run=redirect:https://${HTTP_HOST}${REQUEST_URI}')
+        args.append('--route-label=ssl-okay')
+
+
+if php is not None:
+    php_version = expand(php['version'])
+    if len(php_version) != 3 or php_version[1] != '.':
+        logger.error("%s: php version must be X.Y, not %s", weaverfile, php_version)
+        exit(1)
+
+    if not os.path.isdir('/sw/php'):
+        os.mkdir('/sw/php', 0o755)
+
+    plugin = '/sw/uwsgi/plugins/php{}{}si_plugin.so'.format(php_version[0], php_version[2])
+
+    args.append('--plugin=0:{}'.format(plugin))
+    args.append('--php-docroot='+docroot)
+    args.append('--check-static='+docroot)
+    args.append('--static-skip-ext=.php')
+    args.append('--php-allowed-ext=.php')
+
+    if not os.path.isdir('/etc/php'):
+        os.mkdir('/etc/php')
+    with open('/etc/php/php.ini', 'w') as f:
+        f.write('pdo_mysql.default_socket=/run/mysql.sock\n')
+        f.write('expose_php=off\n')
+        f.write('zend_extension=opcache.so\n')
+        for extn in php['extensions']:
+            f.write('extension='+expand(extn)+'\n')
+        for k, v in php['ini-set'].items():
+            f.write(k+'='+expand(str(v))+'\n')
+
+    if 'fallback' in php:
+        args.append('--php-fallback2='+expand(php['fallback']))
+    if 'fallback-qs' in php:
+        args.append('--php-fallback-qs='+expand(php['fallback-qs']))
+    for index in php['index']:
+        args.append('--php-index='+expand(index))
+
+    os.environ['PATH'] = env['PATH']
+    if 'require' in php and php['require'] is not None:
+        for req in php['require']:
+            os.spawnl(os.P_WAIT, '/sw/php/bin/composer', 'composer', 'global', 'require', expand(req))
+
+if 'public-dirs' in config and config['public-dirs'] is not None:
+    for d in config['public-dirs']:
+        args.append("--check-static="+expand(d))
+
+if 'static-maps' in config and config['static-maps'] is not None:
+    for p, d in config['static-maps'].items():
+        args.append("--static-map={}={}".format(expand(p), expand(d)))
+
+if 'static-index' in config and config['static-index'] is not None:
+    for i in config['static-index']:
+        args.append("--static-index="+expand(i))
+
+def add_auth_ip(ip_addr):
+    if ip_addr.find(':') != -1:
+        args.append('--route-if=ipv6in:${{REMOTE_ADDR}};{} goto:auth-done'.format(ip_addr))
+    else:
+        args.append('--route-if=ipv4in:${{REMOTE_ADDR}};{} goto:auth-done'.format(ip_addr))
+
+if 'auth' in config:
+    auth = config['auth']
+
+    if 'ip-whitelist' in auth:
+        default_deny = True
+        for ip in auth['ip-whitelist']:
+            if expand(ip) == 'tbx':
+                add_auth_ip('78.32.251.192/28')
+                add_auth_ip('89.197.53.246/32')
+                add_auth_ip('46.43.35.22/32')
+                add_auth_ip('193.227.244.0/23')
+                add_auth_ip('172.28.0.0/14')
+            else:
+                add_auth_ip(expand(ip))
+
+    args.append('--route-uri=^/.well-known/acme-challenge goto:auth-done')
+
+    if 'htpasswd' in auth:
+        default_deny = True
+        if 'realm' in auth:
+            realm = expand(auth['realm'])
+        else:
+            realm = 'Login required'
+        args.append('--route-run=basicauth:{},{}'.format(realm, expand(auth['htpasswd'])))
+
+args.append('--route-label=auth-done')
+
+dockerfile.write('# Dockerfile automatically generated by Weaver,\n')
+dockerfile.write('# the Torchbox automated deployment tool.\n')
+dockerfile.write('FROM '+base_image + '\n')
+dockerfile.write('EXPOSE 80\n')
+dockerfile.write('COPY . /app\n')
+
+#if 'symlink' in config and config['symlink'] is not None:
+#    for src, dst in config['symlink'].items():
+#        psrc = '/app/' + src
+#        if os.path.islink(psrc) or os.path.isfile(psrc):
+#            os.unlink(psrc)
+#        elif os.path.isdir(psrc):
+#            os.rmdir(psrc)
+#        if src[-1] == '/' and not os.path.isdir(dst):
+#            os.mkdir(dst)
+#        os.symlink(dst, psrc)
+
+if python is not None and 'requirements' in python:
+    dockerfile.write('RUN cd /app && pip install -r ' + python['requirements'] + '\n')
+
+if 'commands' in config and config['commands'] is not None:
+    for command in config['commands']:
+        dockerfile.write('RUN '+command + '\n')
+
+args += ['--env='+str(k)+'='+expand(str(env[k])) for k in env]
+
+for e in env:
+    dockerfile.write('ENV {} {}\n'.format(e, env[e]))
+
+dockerfile.write('CMD ['+ ", ".join(['"'+arg.replace("\\", "\\\\").replace('"', '\\"')+'"' for arg in args]) + ']\n')
+dockerfile.close()
+
+sys.stdout.flush()
+
+run_or_die('docker', 'build', '-t', repository, '.')
+run_or_die('docker', 'push', repository)
