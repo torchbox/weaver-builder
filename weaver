@@ -35,7 +35,7 @@ git_uri = os.environ['WEAVER_GIT_URI']
 
 git_ref = os.environ.get('WEAVER_GIT_REF', None)
 
-os.environ['GIT_SSH_COMMAND'] = 'ssh -oStrictHostKeyChecking=no -i /ssh_identity'
+os.environ['GIT_SSH_COMMAND'] = 'ssh -oStrictHostKeyChecking=no -i /ssh/identity'
 
 docroot = '/app'
 
