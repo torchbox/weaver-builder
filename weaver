@@ -24,16 +24,18 @@ logger = logging.getLogger('weaver.builder')
 
 if 'WEAVER_DOCKER_REPOSITORY' not in os.environ:
     logger.error("$WEAVER_DOCKER_REPOSITORY is not set.")
-    exit(1)
+    exit()
 repository = os.environ['WEAVER_DOCKER_REPOSITORY']
 
 git_uri = os.environ['WEAVER_GIT_URI']
 if 'WEAVER_GIT_URI' not in os.environ:
     logger.error("$WEAVER_GIT_URI is not set.")
-    exit(1)
+    exit()
 git_uri = os.environ['WEAVER_GIT_URI']
 
 git_ref = os.environ.get('WEAVER_GIT_REF', None)
+
+os.environ['GIT_SSH_COMMAND'] = 'ssh -oStrictHostKeyChecking=no -i /ssh_identity'
 
 docroot = '/app'
 
@@ -43,7 +45,7 @@ def run_or_die(*args):
     if sp.returncode != 0:
         logger.error("build failed with status <%s>:\n%s", sp.returncode, out.decode('utf-8'))
         logger.error("build terminated with error.")
-        exit(1)
+        exit()
 
 
 logger.info("""
@@ -73,7 +75,7 @@ try:
     os.chdir(app_dir)
 except Exception as e:
     logger.error("cannot chdir to %s: %s", app_dir, str(e))
-    exit(1)
+    exit()
 
 # Basic environment that we'll put in the built image.
 env = {
@@ -100,7 +102,7 @@ def do_sub(m):
         except Exception as exc:
             logger.error("error interpolating <%s>: %s", subn, str(exc))
 
-        exit(1)
+        exit()
 
 
 def expand(text):
@@ -118,7 +120,7 @@ with open(weaverfile, 'r') as stream:
         config = yaml.load(stream)
     except yaml.YAMLError as e:
         logger.error("cannot load %s: %s", weaverfile, str(e))
-        exit(1)
+        exit()
 
 
 class MergeError(Exception):
@@ -192,21 +194,21 @@ if 'python' in config:
 
     if not isinstance(python, dict):
         stderr.write("ERROR: 'python' must be a dict.\n")
-        exit(1)
+        exit()
 
     if 'version' not in python:
         stderr.write("ERROR: Python version not configured in Weaverfile\n")
-        exit(1)
+        exit()
 
     if 'module' not in python:
         stderr.write("ERROR: Python WSGI module not configured in Weaverfile\n")
-        exit(1)
+        exit()
 
     python_version = expand(python['version'])
 
     if len(python_version) != 3 or python_version[1] != '.':
         logger.error("%s: python version must be X.Y, not %s\n", weaverfile, python_version)
-        exit(1)
+        exit()
 
     env['PYTHONPATH'] = '/app'
     plugin = '/usr/local/lib/uwsgi/python_plugin.so'
@@ -226,7 +228,7 @@ if 'php' in config:
 
     if 'version' not in php:
         print("[weaver] ERROR: PHP version not configured in Weaverfile")
-        sys.exit(1)
+        sys.exit()
 
     env['PATH'] = '/sw/php/bin:/local/home/.composer/vendor/bin:' + env['PATH']
 
@@ -258,7 +260,7 @@ if php is not None:
     php_version = expand(php['version'])
     if len(php_version) != 3 or php_version[1] != '.':
         logger.error("%s: php version must be X.Y, not %s", weaverfile, php_version)
-        exit(1)
+        exit()
 
     if not os.path.isdir('/sw/php'):
         os.mkdir('/sw/php', 0o755)

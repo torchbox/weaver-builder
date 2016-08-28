@@ -13,7 +13,7 @@
 
 FROM python:3-alpine
 
-RUN apk --no-cache add git docker
+RUN apk --no-cache add openssh-client git docker
 RUN pip install pyyaml
 
 COPY weaver /
