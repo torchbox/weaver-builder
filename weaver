@@ -25,16 +25,12 @@ logging.basicConfig(format=FORMAT, level=logging.INFO)
 logger = logging.getLogger('weaver.builder')
 
 
+def fatal_error(message, *args):
+    logger.critical(message, *args)
+    sys.exit(1)
+
+
 docroot = '/app'
-
-def run_or_die(*args):
-    sp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-    out, err = sp.communicate()
-    if sp.returncode != 0:
-        logger.error("build failed with status <%s>:\n%s", sp.returncode, out.decode('utf-8'))
-        logger.error("build terminated with error.")
-        sys.exit()
-
 
 logger.info("""
 __        __
@@ -55,8 +51,7 @@ app_dir = settings['workspace']['path']
 try:
     os.chdir(app_dir)
 except Exception as e:
-    logger.error("cannot chdir to %s: %s", app_dir, str(e))
-    sys.exit()
+    fatal_error("cannot chdir to %s: %s", app_dir, str(e))
 
 
 # Basic environment that we'll put in the built image.
@@ -80,11 +75,9 @@ def do_sub(m):
         try:
             return funcs[bits[0]](*bits[1:])
         except KeyError:
-            logger.error("error interpolating <%s>: unknown function %s", subn, bits[0])
+            fatal_error("error interpolating <%s>: unknown function %s", subn, bits[0])
         except Exception as exc:
-            logger.error("error interpolating <%s>: %s", subn, str(exc))
-
-        sys.exit()
+            fatal_error("error interpolating <%s>: %s", subn, str(exc))
 
 
 def expand(text):
@@ -101,8 +94,7 @@ with open(weaverfile, 'r') as stream:
     try:
         config = yaml.load(stream)
     except yaml.YAMLError as e:
-        logger.error("cannot load %s: %s", weaverfile, str(e))
-        sys.exit()
+        fatal_error("cannot load %s: %s", weaverfile, str(e))
 
 
 class MergeError(Exception):
@@ -175,22 +167,18 @@ if 'python' in config:
     python = config['python']
 
     if not isinstance(python, dict):
-        sys.stderr.write("ERROR: 'python' must be a dict.\n")
-        sys.exit()
+        fatal_error("'python' must be a dict.\n")
 
     if 'version' not in python:
-        sys.stderr.write("ERROR: Python version not configured in Weaverfile\n")
-        sys.exit()
+        fatal_error("python version not configured in Weaverfile\n")
 
     if 'module' not in python:
-        sys.stderr.write("ERROR: Python WSGI module not configured in Weaverfile\n")
-        sys.exit()
+        fatal_error("python WSGI module not configured in Weaverfile\n")
 
     python_version = expand(python['version'])
 
     if len(python_version) != 3 or python_version[1] != '.':
-        logger.error("%s: python version must be X.Y, not %s\n", weaverfile, python_version)
-        sys.exit()
+        fatal_error("%s: python version must be X.Y, not %s\n", weaverfile, python_version)
 
     env['PYTHONPATH'] = '/app'
     plugin = '/usr/local/lib/uwsgi/python_plugin.so'
@@ -209,8 +197,7 @@ if 'php' in config:
         php = {'version': php}
 
     if 'version' not in php:
-        print("[weaver] ERROR: PHP version not configured in Weaverfile")
-        sys.exit()
+        fatal_error("PHP version not configured in Weaverfile")
 
     env['PATH'] = '/sw/php/bin:/local/home/.composer/vendor/bin:' + env['PATH']
 
@@ -241,8 +228,7 @@ if ssl is not None:
 if php is not None:
     php_version = expand(php['version'])
     if len(php_version) != 3 or php_version[1] != '.':
-        logger.error("%s: php version must be X.Y, not %s", weaverfile, php_version)
-        sys.exit()
+        fatal_error("%s: php version must be X.Y, not %s", weaverfile, php_version)
 
     if not os.path.isdir('/sw/php'):
         os.mkdir('/sw/php', 0o755)
