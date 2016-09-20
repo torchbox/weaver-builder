@@ -314,6 +314,7 @@ dockerfile.write('# the Torchbox automated deployment tool.\n')
 dockerfile.write('FROM '+base_image + '\n')
 dockerfile.write('EXPOSE 80\n')
 dockerfile.write('COPY . /app\n')
+dockerfile.write('WORKDIR /app\n')
 
 #if 'symlink' in config and config['symlink'] is not None:
 #    for src, dst in config['symlink'].items():
