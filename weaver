@@ -11,8 +11,6 @@
 # freely. This software is provided 'as-is', without any express or implied
 # warranty.
 
-# weaver-builder takes a Git repository containing a Weaverfile, converts
-# it to a Dockerfile, then pushes it to a Docker repository.
 
 import os, sys, multiprocessing, socket, yaml, re, subprocess, random, string, time
 from sys import stdout, stderr, exit
@@ -22,20 +20,6 @@ FORMAT = '%(asctime)-15s [%(levelname)-7s] weaver-builder: %(message)s'
 logging.basicConfig(format=FORMAT, level=logging.INFO)
 logger = logging.getLogger('weaver.builder')
 
-if 'WEAVER_DOCKER_REPOSITORY' not in os.environ:
-    logger.error("$WEAVER_DOCKER_REPOSITORY is not set.")
-    exit()
-repository = os.environ['WEAVER_DOCKER_REPOSITORY']
-
-git_uri = os.environ['WEAVER_GIT_URI']
-if 'WEAVER_GIT_URI' not in os.environ:
-    logger.error("$WEAVER_GIT_URI is not set.")
-    exit()
-git_uri = os.environ['WEAVER_GIT_URI']
-
-git_ref = os.environ.get('WEAVER_GIT_REF', None)
-
-os.environ['GIT_SSH_COMMAND'] = 'ssh -oStrictHostKeyChecking=no -i /ssh/identity'
 
 docroot = '/app'
 
@@ -63,13 +47,6 @@ Copyright (c) 2015, 2016 Torchbox Ltd.
 
 app_dir = '/usr/src/build'
 os.mkdir(app_dir)
-
-logger.info("Cloning git repository <%s> (ref <%s>)", git_uri, git_ref)
-
-if git_ref:
-    ret = run_or_die('git', 'clone', '-b', git_ref, '--', git_uri, app_dir)
-else:
-    ret = run_or_die('git', 'clone', '--', git_uri, app_dir)
 
 try:
     os.chdir(app_dir)
@@ -374,6 +351,3 @@ dockerfile.write('CMD ['+ ", ".join(['"'+arg.replace("\\", "\\\\").replace('"', 
 dockerfile.close()
 
 sys.stdout.flush()
-
-run_or_die('docker', 'build', '-t', repository, '.')
-run_or_die('docker', 'push', repository)
