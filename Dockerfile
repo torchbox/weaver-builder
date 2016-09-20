@@ -18,4 +18,4 @@ RUN pip install pyyaml
 
 COPY weaver /
 
-CMD ["/weaver"]
+ENTRYPOINT ["/weaver"]
