@@ -11,6 +11,7 @@
 # freely. This software is provided 'as-is', without any express or implied
 # warranty.
 
+import json
 import logging
 import os
 import re
@@ -47,6 +48,16 @@ Weaver application deployment system,
 Copyright (c) 2015, 2016 Torchbox Ltd.
 
 """)
+
+settings = json.loads(sys.argv[2])
+app_dir = settings['workspace']['path']
+
+try:
+    os.chdir(app_dir)
+except Exception as e:
+    logger.error("cannot chdir to %s: %s", app_dir, str(e))
+    sys.exit()
+
 
 # Basic environment that we'll put in the built image.
 env = {
