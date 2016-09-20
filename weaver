@@ -11,11 +11,14 @@
 # freely. This software is provided 'as-is', without any express or implied
 # warranty.
 
-
-import os, sys, multiprocessing, socket, yaml, re, subprocess, random, string, time
-from sys import stdout, stderr, exit
-
 import logging
+import os
+import re
+import subprocess
+import sys
+import yaml
+
+
 FORMAT = '%(asctime)-15s [%(levelname)-7s] weaver-builder: %(message)s'
 logging.basicConfig(format=FORMAT, level=logging.INFO)
 logger = logging.getLogger('weaver.builder')
@@ -29,7 +32,7 @@ def run_or_die(*args):
     if sp.returncode != 0:
         logger.error("build failed with status <%s>:\n%s", sp.returncode, out.decode('utf-8'))
         logger.error("build terminated with error.")
-        exit()
+        sys.exit()
 
 
 logger.info("""
@@ -44,15 +47,6 @@ Weaver application deployment system,
 Copyright (c) 2015, 2016 Torchbox Ltd.
 
 """)
-
-app_dir = '/usr/src/build'
-os.mkdir(app_dir)
-
-try:
-    os.chdir(app_dir)
-except Exception as e:
-    logger.error("cannot chdir to %s: %s", app_dir, str(e))
-    exit()
 
 # Basic environment that we'll put in the built image.
 env = {
@@ -79,7 +73,7 @@ def do_sub(m):
         except Exception as exc:
             logger.error("error interpolating <%s>: %s", subn, str(exc))
 
-        exit()
+        sys.exit()
 
 
 def expand(text):
@@ -97,7 +91,7 @@ with open(weaverfile, 'r') as stream:
         config = yaml.load(stream)
     except yaml.YAMLError as e:
         logger.error("cannot load %s: %s", weaverfile, str(e))
-        exit()
+        sys.exit()
 
 
 class MergeError(Exception):
@@ -170,22 +164,22 @@ if 'python' in config:
     python = config['python']
 
     if not isinstance(python, dict):
-        stderr.write("ERROR: 'python' must be a dict.\n")
-        exit()
+        sys.stderr.write("ERROR: 'python' must be a dict.\n")
+        sys.exit()
 
     if 'version' not in python:
-        stderr.write("ERROR: Python version not configured in Weaverfile\n")
-        exit()
+        sys.stderr.write("ERROR: Python version not configured in Weaverfile\n")
+        sys.exit()
 
     if 'module' not in python:
-        stderr.write("ERROR: Python WSGI module not configured in Weaverfile\n")
-        exit()
+        sys.stderr.write("ERROR: Python WSGI module not configured in Weaverfile\n")
+        sys.exit()
 
     python_version = expand(python['version'])
 
     if len(python_version) != 3 or python_version[1] != '.':
         logger.error("%s: python version must be X.Y, not %s\n", weaverfile, python_version)
-        exit()
+        sys.exit()
 
     env['PYTHONPATH'] = '/app'
     plugin = '/usr/local/lib/uwsgi/python_plugin.so'
@@ -237,7 +231,7 @@ if php is not None:
     php_version = expand(php['version'])
     if len(php_version) != 3 or php_version[1] != '.':
         logger.error("%s: php version must be X.Y, not %s", weaverfile, php_version)
-        exit()
+        sys.exit()
 
     if not os.path.isdir('/sw/php'):
         os.mkdir('/sw/php', 0o755)
